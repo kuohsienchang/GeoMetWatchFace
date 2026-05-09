@@ -7,17 +7,17 @@ class GeoMetWatchFaceView extends WatchUi.WatchFace {
 
     hidden var _weatherStore;
     hidden var _geoMetClient;
-    hidden var _chartRenderer;
+    hidden var _chart;
     hidden var _fetchPending;
     hidden var _lastFetchEpoch;
 
-    const REFRESH_ACTIVE_SEC = 3600;
+    const REFRESH_SEC = 3600;
 
     function initialize() {
         WatchFace.initialize();
         _weatherStore = new WeatherStore();
         _geoMetClient = new GeoMetClient();
-        _chartRenderer = new ChartRenderer();
+        _chart = new ChartRenderer();
         _fetchPending = false;
         _lastFetchEpoch = 0;
     }
@@ -27,72 +27,79 @@ class GeoMetWatchFaceView extends WatchUi.WatchFace {
     }
 
     function onShow() as Void {
-        requestWeatherIfDue(true);
+        requestWeather(true);
     }
 
     function onUpdate(dc as Dc) as Void {
-        requestWeatherIfDue(false);
-
+        requestWeather(false);
         var info = Gregorian.info(Time.now(), Time.FORMAT_MEDIUM);
-        var snap = _weatherStore.getSnapshot();
+        var s = _weatherStore.getSnapshot();
 
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
         dc.clear();
 
         if (dc has :isLowPower && dc.isLowPower()) {
-            drawAodView(dc, info, snap);
+            drawAOD(dc, info, s);
         } else {
-            drawActiveView(dc, info, snap);
+            drawActive(dc, info, s);
         }
+    }
+
+    function requestWeather(force as Boolean) as Void {
+        if (_fetchPending) { return; }
+        var now = Time.now().value();
+        if (force || ((now - _lastFetchEpoch) >= REFRESH_SEC)) {
+            _fetchPending = true;
+            _geoMetClient.fetchSnapshotV2(method(:onWeather));
+        }
+    }
+
+    function onWeather(p as Dictionary) as Void {
+        _fetchPending = false;
+        _lastFetchEpoch = Time.now().value();
+        _weatherStore.updateSnapshotV2(p);
+        WatchUi.requestUpdate();
+    }
+
+    function drawAOD(dc as Dc, info as Time.Gregorian.Info, s as Dictionary) as Void {
+        var c = s[:current];
+        var tm = Lang.format("$1$:$2$", [info.hour.format("%02d"), info.min.format("%02d")]);
+        var tt = c[:tempC] == null ? "--°C" : c[:tempC].format("%.0f") + "°C";
+
+        dc.drawText(dc.getWidth()/2, dc.getHeight()/3, Graphics.FONT_XTINY, tm, Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(dc.getWidth()/2, (dc.getHeight()/3)+28, Graphics.FONT_TINY, tt, Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(dc.getWidth()/2, (dc.getHeight()/3)+48, Graphics.FONT_XTINY, _weatherStore.staleStateLabel(), Graphics.TEXT_JUSTIFY_CENTER);
+    }
+
+    function drawActive(dc as Dc, info as Time.Gregorian.Info, s as Dictionary) as Void {
+        var w = dc.getWidth();
+        var h = dc.getHeight();
+        var c = s[:current];
+
+        // Header like reference style
+        var tm = Lang.format("$1$:$2$", [info.hour.format("%02d"), info.min.format("%02d")]);
+        var temp = c[:tempC] == null ? "--°" : c[:tempC].format("%.0f") + "°";
+        var feels = c[:feelsLikeC] == null ? "" : ("Feels " + c[:feelsLikeC].format("%.0f") + "°");
+
+        dc.drawText(12, 6, Graphics.FONT_SMALL, tm, Graphics.TEXT_JUSTIFY_LEFT);
+        dc.drawText(w - 12, 6, Graphics.FONT_SMALL, temp, Graphics.TEXT_JUSTIFY_RIGHT);
+        dc.drawText(12, 28, Graphics.FONT_XTINY, feels, Graphics.TEXT_JUSTIFY_LEFT);
+        dc.drawText(12, 44, Graphics.FONT_TINY, c[:narrativeText], Graphics.TEXT_JUSTIFY_LEFT);
+        dc.drawText(w - 12, 28, Graphics.FONT_XTINY, _weatherStore.staleStateLabel(), Graphics.TEXT_JUSTIFY_RIGHT);
+
+        // Main trend chart in middle
+        var cx = 8;
+        var cy = 66;
+        var cw = w - 16;
+        var ch = (h * 0.52).toNumber();
+        _chart.drawHourlyChart(dc, cx, cy, cw, ch, s[:hourly]);
+
+        // Bottom simplified forecast
+        var sy = h - 64;
+        _chart.drawDailyStrip(dc, 8, sy, w - 16, 56, s[:daily]);
     }
 
     function onPartialUpdate(dc as Dc) as Void {
         onUpdate(dc);
-    }
-
-    function requestWeatherIfDue(force as Boolean) as Void {
-        if (_fetchPending) { return; }
-        var nowEpoch = Time.now().value();
-        var due = (nowEpoch - _lastFetchEpoch) >= REFRESH_ACTIVE_SEC;
-        if (force || due) {
-            _fetchPending = true;
-            _geoMetClient.fetchSnapshotV2(method(:onWeatherResponse));
-        }
-    }
-
-    function onWeatherResponse(payload as Dictionary) as Void {
-        _fetchPending = false;
-        _lastFetchEpoch = Time.now().value();
-        _weatherStore.updateSnapshotV2(payload);
-        WatchUi.requestUpdate();
-    }
-
-    function drawAodView(dc as Dc, info as Time.Gregorian.Info, snap as Dictionary) as Void {
-        var c = snap[:current];
-        var timeText = Lang.format("$1$:$2$", [info.hour.format("%02d"), info.min.format("%02d")]);
-        var tempText = c[:tempC] == null ? "--°C" : c[:tempC].format("%.0f") + "°C";
-
-        dc.drawText(dc.getWidth()/2, dc.getHeight()/3, Graphics.FONT_XTINY, timeText, Graphics.TEXT_JUSTIFY_CENTER);
-        dc.drawText(dc.getWidth()/2, (dc.getHeight()/3)+28, Graphics.FONT_TINY, tempText, Graphics.TEXT_JUSTIFY_CENTER);
-        dc.drawText(dc.getWidth()/2, (dc.getHeight()/3)+48, Graphics.FONT_XTINY, _weatherStore.staleStateLabel(), Graphics.TEXT_JUSTIFY_CENTER);
-    }
-
-    function drawActiveView(dc as Dc, info as Time.Gregorian.Info, snap as Dictionary) as Void {
-        var w = dc.getWidth();
-        var h = dc.getHeight();
-
-        var c = snap[:current];
-        var timeText = Lang.format("$1$:$2$", [info.hour.format("%02d"), info.min.format("%02d")]);
-        var tempText = c[:tempC] == null ? "--°C" : c[:tempC].format("%.0f") + "°C";
-        var feels = c[:feelsLikeC] == null ? "" : ("Feels " + c[:feelsLikeC].format("%.0f") + "°");
-
-        dc.drawText(12, 8, Graphics.FONT_SMALL, timeText, Graphics.TEXT_JUSTIFY_LEFT);
-        dc.drawText(w-12, 8, Graphics.FONT_SMALL, tempText, Graphics.TEXT_JUSTIFY_RIGHT);
-        dc.drawText(12, 32, Graphics.FONT_XTINY, feels, Graphics.TEXT_JUSTIFY_LEFT);
-        dc.drawText(w-12, 32, Graphics.FONT_XTINY, _weatherStore.staleStateLabel(), Graphics.TEXT_JUSTIFY_RIGHT);
-        dc.drawText(12, 50, Graphics.FONT_TINY, c[:narrativeText], Graphics.TEXT_JUSTIFY_LEFT);
-
-        _chartRenderer.drawHourlyChart(dc, 8, 76, w-16, (h*0.45).toNumber(), snap[:hourly]);
-        _chartRenderer.drawDailyStrip(dc, 8, h-62, w-16, 54, snap[:daily]);
     }
 }
