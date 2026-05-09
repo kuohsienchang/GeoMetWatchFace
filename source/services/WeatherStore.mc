@@ -1,16 +1,50 @@
 using Toybox.Time;
+
 class WeatherStore {
+    const STALE_MINUTES_DEFAULT = 120;
     hidden var _snapshot;
+
     function initialize() {
-        _snapshot = {:temperatureC=>null,:condition=>"Loading...",:ageMinutes=>-1,:sourceTime=>"n/a",:humidity=>null,:windKmh=>null,:precipMm=>null,:minTempC=>null,:maxTempC=>null,:richWeatherText=>"Now -- | Forecast loading..."};
+        _snapshot = {
+            :ok => false,
+            :current => {
+                :tempC=>null,:feelsLikeC=>null,:conditionText=>"Loading...",:iconCode=>"unknown",
+                :humidityPct=>null,:windKmh=>null,:windDirDeg=>null,:pressureKpa=>null,
+                :narrativeText=>"Fetching GeoMet data...",:updatedEpoch=>null
+            },
+            :hourly => [],
+            :daily => [],
+            :meta => {:locationName=>"Canada", :source=>"GeoMet"}
+        };
     }
+
     function getSnapshot() as Dictionary { return _snapshot; }
-    function updateFromGeoMet(payload as Dictionary) as Void {
-        if (!(payload has :ok) || !payload[:ok]) { _snapshot[:condition]="GeoMet unavailable"; _snapshot[:richWeatherText]="Now unavailable | Forecast unavailable"; return; }
-        _snapshot[:temperatureC]=payload[:temperatureC]; _snapshot[:condition]=payload[:condition]; _snapshot[:sourceTime]=payload[:sourceTime];
-        _snapshot[:humidity]=payload[:humidity]; _snapshot[:windKmh]=payload[:windKmh]; _snapshot[:precipMm]=payload[:precipMm];
-        _snapshot[:minTempC]=payload[:minTempC]; _snapshot[:maxTempC]=payload[:maxTempC]; _snapshot[:richWeatherText]=payload[:richWeatherText];
-        _snapshot[:ageMinutes]=0; _snapshot[:updatedEpoch]=Time.now().value();
+
+    function updateSnapshotV2(payload as Dictionary) as Void {
+        if (payload == null || !(payload has :ok) || !payload[:ok]) {
+            _snapshot[:current][:conditionText] = "GeoMet unavailable";
+            _snapshot[:current][:narrativeText] = "Using cached weather.";
+            return;
+        }
+
+        _snapshot = payload;
+        if (!(_snapshot has :hourly) || _snapshot[:hourly] == null) { _snapshot[:hourly] = []; }
+        if (!(_snapshot has :daily)  || _snapshot[:daily]  == null) { _snapshot[:daily]  = []; }
+        if (!(_snapshot[:current] has :updatedEpoch) || _snapshot[:current][:updatedEpoch] == null) {
+            _snapshot[:current][:updatedEpoch] = Time.now().value();
+        }
     }
-    function ageMinutes() as Number { return !(_snapshot has :updatedEpoch) ? -1 : ((Time.now().value()-_snapshot[:updatedEpoch])/60).toNumber(); }
+
+    function freshnessMinutes() as Number {
+        if (!(_snapshot has :current) || _snapshot[:current][:updatedEpoch] == null) { return -1; }
+        return ((Time.now().value() - _snapshot[:current][:updatedEpoch]) / 60).toNumber();
+    }
+
+    function staleStateLabel() as String {
+        var age = freshnessMinutes();
+        if (age < 0) { return "NO DATA"; }
+        if (age <= 30) { return "LIVE"; }
+        if (age <= STALE_MINUTES_DEFAULT) { return age.format("%.0f") + "m"; }
+        return "STALE";
+    }
 }
